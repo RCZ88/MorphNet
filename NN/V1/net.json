@@ -1,0 +1,36 @@
+{
+  "shape": {
+    "in": 4,
+    "hidden" : [12, 15, 8],
+    "out": 6
+  },
+  "iterations_detail" : {
+    "epoch_count" : 5,
+    "dat_per_input": 10
+  },
+
+  "layers": [
+    {
+      "size" : 12,
+      "neurons": [
+        {
+          "weights": [],
+          "activation": 3.2,
+          "bias": 0.42
+        },
+        {
+          "weights": [],
+          "activation": 3.2,
+          "bias": 2.1
+        }
+      ]
+    },
+    {
+      "size": 3,
+      "neurons": [
+
+      ]
+    }
+
+  ]
+}

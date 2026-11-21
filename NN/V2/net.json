@@ -1,0 +1,15 @@
+{
+  "contents": [
+    "size", "weights", "activations", "biases", "zs"
+  ],
+  "networks": [
+    {
+      "size": 3,
+      "layer_shape": [],
+      "weights": [[[]]],
+      "activations": [[]],
+      "biases" : [[]],
+      "zs" : [[]]
+    }
+  ]
+}
