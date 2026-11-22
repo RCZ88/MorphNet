@@ -11,8 +11,14 @@ private:
 
 public:
     Matrix(int rows, int cols);
+    Matrix();
+    ~Matrix();
 
     int getRows() const;
 
     int getCols() const;
+
+    int getElementCount() const;
+
+    void printMatrix() const;
 };
