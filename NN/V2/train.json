@@ -6,7 +6,8 @@
     "out": 3
   },
   "iteration_details": {
-    "epoch_count": 5,
+    "epoch_count": 3,
+    "dataset_count": 5,
     "data_size": 10
   },
   "learn_details": {

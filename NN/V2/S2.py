@@ -3,7 +3,7 @@ import math
 import random
 import time
 from dataclasses import dataclass, fields, field
-from typing import TypedDict, List
+from typing import List
 
 import numpy as np
 
@@ -28,13 +28,14 @@ class DictAccessMixin:
 class Network(DictAccessMixin):
     size: int = -1
     layer_sizes: list[int] = field(default_factory=list)
-    weights:Tensor3 = field(default_factory=lambda: np.empty((0,0,0), dtype=np.float32))
-    activations:Matrix = field(default_factory=lambda: np.empty((0,0), dtype=np.float32))
-    zs:Matrix = field(default_factory=lambda: np.empty((0,0), dtype=np.float32))
-    biases:Matrix = field(default_factory=lambda: np.empty((0,0), dtype=np.float32))
+    weights:list[Matrix] = field(default_factory=list)
+    activations:list[Matrix] = field(default_factory=list)
+    zs:list[Vector] = field(default_factory=list)
+    biases:list[Vector] = field(default_factory=list)
 
 @dataclass
 class TrainDat(DictAccessMixin):
+    dataset_count:int
     epoch_amount:int
     data_size:int
     batch_size:int
@@ -50,22 +51,30 @@ def relu(z: np.ndarray):
 def relu_derivative(x):
   return (x > 0).astype(float)
 
-def forward(x:np.ndarray, nn:Network):
-    Ws:Tensor3 = nn.weights #tensor: multiple weights matrix for each l+1 layers
-    Bs:Matrix = nn.biases
-    As:Matrix = nn.activations
-    As[0] = x
-    for i in range(1, Ws.shape[0]):
-        As[i] = relu(As[i-1] @ Ws[i].T + Bs[i])
+#x input matrix shape (a, m)
+#w weight matrix shape (b, a)
+#m is the batch size.
+def forward(x:Matrix, nn:Network):
+    Ws:list[Matrix] = nn.weights #tensor: multiple weights matrix for each l+1 layers
+    Bs:list[Vector] = nn.biases
 
-def backwards(eval:np.ndarray, nn:Network, m:int, lr:float = 0.0001):
-    Ws:Tensor3 = nn.weights
-    As:Matrix = nn.activations
-    Zs:Matrix = nn.zs
+    curX:Matrix = x
+    for i in range(1, len(Ws)):
+        nn.zs[i] = Ws[i] @ curX + Bs[i]
+        nn.activations[i] = relu(nn.zs[i])
+        curX = nn.activations[i]
 
-    latest_dZ= np.zeros(Zs.shape)
+
+
+def backwards(eval:np.ndarray, nn:Network, lr:float = 0.0001):
+    Ws:list[Matrix] = nn.weights
+    As:list[Matrix] = nn.activations
+    Zs:list[Vector] = nn.zs
+
+    latest_dZ= np.zeros(Zs[-1].shape[0])
     dWs:list[Matrix] = []
     dBs:list[Vector] = []
+    m = As[0].shape[1]
     for i in range(eval.shape[0]-1, 0, -1):
         if nn.size-i-1 == 0:
             dA = (As[i] - eval) / m
@@ -127,11 +136,14 @@ def load_train_data(nn:Network):
                 evals[n][i] = np.array(eval)
 
 
-        trainData:TrainDat = TrainDat(iter_det["epoch_count"],
-                                      iter_det["data_size"],
-                                      learn_det["batch_size"],
-                                      learn_det["learning_rate"],
-                                      inputs, evals)
+        trainData:TrainDat = TrainDat(
+            iter_det["dataset_count"],
+            iter_det["epoch_count"],
+            iter_det["data_size"],
+            learn_det["batch_size"],
+            learn_det["learning_rate"],
+            inputs, evals)
+
         return trainData
 
 def getRandom(min:float, max:float):
@@ -151,8 +163,31 @@ def he_init(nn:Network):
         nn.weights[i] = np.array(get_normal_randoms(layer_size, -a, a))
 
 
+def handle_init_weights(nn:Network):
+    if (nn.weights[0].shape[0] == 0  and nn.weights[1].shape[0] == 0 or
+            nn.weights[0].size == 0 and nn.weights[1].size == 0):
+        he_init(nn)
 
 def run():
-    load_network()
+    network = load_network()
+    handle_init_weights(network)
+    train_data = load_train_data(network)
+    if not train_data:
+        return
+    batch_size = train_data.batch_size
+    for i_dataset in range(train_data.dataset_count):
+        for i_epoch in range(train_data.epoch_amount):
+            indices = [i for i in range(train_data.inputs.shape[1])]
+            np.random.permutation(indices)
+            in_epoch = np.array([train_data.inputs[i_dataset][indices[i]] for i in range(train_data.inputs.shape[1])])
+            ev_epoch = np.array([train_data.evals[i_dataset][indices[i]] for i in range(train_data.evals.shape[1])])
 
-    load_train_data()
+            for i_batch in range(int(train_data.inputs.shape[1]/batch_size)):
+                in_ = in_epoch[i_batch * batch_size : min((i_batch+1) * batch_size, train_data.inputs.shape[1])]
+                eval = ev_epoch[i_batch * batch_size : min((i_batch+1) * batch_size, train_data.inputs.shape[1])]
+                forward(in_, network)
+                backwards(eval, network, train_data.learning_rate)
+
+
+
+

@@ -15,15 +15,19 @@ int main() {
     using namespace std;
 
     int row, col;
+    cout << "Enter Row n Column (R C) format: ";
     cin >> row >> col;
 
-    const Matrix matrix(3, 4);
-    Matrix *A = nullptr;
+    const Matrix matrix(row, col);
+    Matrix *A;
 
     {
         A = new Matrix();
         Matrix B(3, 5);
-        auto C = new Matrix(5, 12);
+        auto* C = new Matrix(5, 12);
+
+        Matrix&& X= std::move(B);
+        Matrix& Y = *C;
     }
 
     cout << "outside of the scope, B has been destroyed." <<endl;
@@ -36,6 +40,7 @@ int main() {
     printMatrixState(A, "After 'delete A'", "A");
     A = nullptr;
     printMatrixState(A, "After 'set to nullptr'", "A");
+
 
 
     cout<< matrix.getElementCount() << endl;
