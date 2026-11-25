@@ -7,6 +7,7 @@ from typing import List
 from enum import Enum
 
 import numpy as np
+from numpy.f2py.auxfuncs import throw_error
 from numpy.random._examples.cffi.extending import rng
 
 # Define reusable rank-specific aliases (Python 3.12+)
@@ -29,21 +30,113 @@ class Network(DictAccessMixin):
     size: int = -1
     layer_sizes: list[int] = field(default_factory=list)
     weights:list[Matrix] = field(default_factory=list)
-    activations:list[Matrix] = field(default_factory=list)
-    zs:list[Vector] = field(default_factory=list)
+    activations:list[Matrix | Vector] = field(default_factory=list)
+    zs:list[Matrix | Vector] = field(default_factory=list)
     biases:list[Vector] = field(default_factory=list)
 
+    def getInputLayerSize(self, n:Network)->int:
+        return n.layer_sizes[0]
+    def getOutputLayerSize(self, n:Network)->int:
+        return n.layer_sizes[-1]
+
 @dataclass
-class TrainDat(DictAccessMixin):
+class TrainConfig(DictAccessMixin):
     dataset_count:int
     epoch_amount:int
     data_size:int
     batch_size:int
     learning_rate:float
-    inputs:Tensor3
-    evals:Tensor3
     lwCa:dict
 
+
+class Values:
+    def __init__(self, x:Matrix|Vector = np.zeros(shape=(0,0)) , y:Matrix|Vector = np.zeros(shape=(0,0))):
+        # if type(x) != type(y):
+        #     raise TypeError(f"Input Output Type Shape Mismatch!")
+        self.initialized:bool = not(x.shape == (0,0) or y.shape == (0,0))
+        self.x = x
+        self.y = y
+        self.shape = self.x.shape
+    #
+    # def safe_x(self)->Matrix|Vector:
+    #     if not self.initialized or self.x :
+    #         raise ValueError(f"values Are Yet to be Initalized!")
+    #     return self.x
+
+    @staticmethod
+    def get_batch_data(values:Values, batch:int, batchSize:int)->Values:
+        if not values.initialized:
+            raise ValueError(f"Values Are Yet to be Initaliized!")
+        if batchSize * batch >= values.shape[0]:
+            raise ValueError(f"Invalid Batch Error! {batchSize * batchSize} > {values.shape[0]}")
+
+        return Values(values.x[(batch-1) * batchSize : batch * batchSize], values.y[(batch-1) * batchSize : batch * batchSize])
+
+
+class Data:
+    def __init__(self, layer_sizes:list[int], train_config:TrainConfig, train_datasets: list[Values] | None = None, test_datasets : Values| None = None, batchAxis:int = 1, neuronAxis:int = 0):
+        if 1 < batchAxis < 0 or 1 < neuronAxis < 0:
+            raise ValueError("Invalid Batch or Neuron Axis! Must be a positive Index between (0-1)!")
+        if train_datasets is not None:
+            raise TypeError("train_datasets can't be None!")
+        self.layer_sizes = layer_sizes
+        self.train_config = train_config
+        self.train_datasets:list[Values] = train_datasets if train_datasets is not None else []
+        self.test_datasets:Values|None = test_datasets
+        self.initialized = train_datasets != []
+        self.batchAxis = batchAxis
+        self.neuronAxis = neuronAxis
+
+
+    def  safe_test_datasets(self)->Values:
+        if self.test_datasets is None:
+            raise ValueError("Test Datasets can't be None!")
+        return self.test_datasets
+    def check_init(self):
+        if not self.initialized:
+            raise ValueError(f"Dataset Are Yet to be Initaliized!")
+
+    def get_batch_data(self, dataset_id:int, batch:int)->Values:
+        self.check_init()
+        epoch = self.get_epoch(dataset_id)
+        return Values.get_batch_data(epoch, batch, self.train_config.batch_size)
+
+    def get_epoch(self, dataset_id:int)->Values:
+        self.check_init()
+        indices = np.random.permutation([i for i in range(self.train_datasets[dataset_id].shape[self.batchAxis])])
+        return Values(np.array([self.train_datasets[dataset_id].x[i] for i in indices]), np.array([self.train_datasets[dataset_id].y[i] for i in indices]))
+
+    def get_batch_size(self, dataset_id)->int:
+        self.check_init()
+        return (self.train_datasets[dataset_id]).shape[self.batchAxis] / self.train_config.batch_size
+
+    def add_train_dataset(self, values:Values):
+        if values is None:
+            raise TypeError("Values cant be None!")
+
+        if values.shape[self.batchAxis] % self.train_config.batch_size != 0:
+            raise ValueError(f"Epoch Size indivisible by Batch Size!")
+        self.train_datasets.append(values)
+
+    def add_test_dataset(self, values:Values):
+        if values.shape[self.batchAxis] % self.train_config.batch_size != 0:
+            raise ValueError(f"Epoch Size indivisible by Batch Size!")
+
+        self.test_datasets = values
+
+
+class DropOut:
+    def __init__(self, on:bool = False, rate = 0):
+        self.on = on
+        self.rate = rate
+
+    def get_activations(self, activations:list[Matrix|Vector])->list[Matrix|Vector]:
+        if not self.on:
+            return activations
+        return  [
+            rng.binomial(1, 1 - self.rate, size=(activations[i].shape[0], 1)) * activations[i] / (1-self.rate)
+            for i in range(len(activations))
+        ]
 
 class SType(Enum):
     STEP = "STEP"
@@ -57,19 +150,6 @@ class Scheduler:
 
     def get_lr(self, step):
         raise NotImplementedError
-
-class DropOut:
-    def __init__(self, on:bool = False, rate = 0):
-        self.on = on
-        self.rate = rate
-
-    def get_activations(self, activations:list[Matrix])->list[Matrix]:
-        if not self.on:
-            return activations
-        return  [
-            rng.binomial(1, 1 - self.rate, size=(activations[i].shape[0], 1)) * activations[i] / (1-self.rate)
-            for i in range(len(activations))
-        ]
 
 class StepDecay(Scheduler):
     def __init__(self, initial_lr, factor, interval):
@@ -145,25 +225,34 @@ def relu_derivative(x):
 #x input matrix shape (a, m)
 #w weight matrix shape (b, a)
 #m is the batch size.
-def forward(x:Matrix, nn:Network):
-    Ws:list[Matrix] = nn.weights #tensor: multiple weights matrix for each l+1 layers
-    Bs:list[Vector] = nn.biases
+def forward(x:Matrix|Vector, network:Network):
+    Ws:list[Matrix] = network.weights #tensor: multiple weights matrix for each l+1 layers
+    Bs:list[Vector] = network.biases
 
-    curX:Matrix = x
+    curX:Matrix|Vector = x
     for i in range(1, len(Ws)):
-        nn.zs[i] = Ws[i] @ curX + Bs[i]
-        nn.activations[i] = relu(nn.zs[i])
-        curX = nn.activations[i]
+        network.zs[i] = Ws[i] @ curX + Bs[i]
+        network.activations[i] = relu(network.zs[i])
+        curX = network.activations[i]
 
 
 def sum_weights(weights:list[Matrix])->float:
     return sum(np.sum(np.abs(w)) for w in weights)
 
 #rs = regulization constant (hyperparam)
-def backwards(eval:np.ndarray, network:Network, step:int, reg_config:Regularization = Regularization(RType.NONE), scheduler_config:Scheduler = NoScheduler()):
+def backwards(eval:Matrix|Vector, network:Network, step:int, reg_config:Regularization = Regularization(RType.NONE), scheduler_config:Scheduler = NoScheduler()):
+    if eval.shape != network.activations[-1].shape:
+        print(f"Shape Mismatch Error! Network LL:{network.activations[-1].shape} != Eval: {eval.shape}")
+        return
+    if len(network.activations) == 0 or network.size == 0:
+        print(f"Error! Invalid Network Size!")
+        return
+    if  eval.shape[0] == 0 or eval.shape[1] == 0:
+        print(f"Error! Eval Shape Empty.")
+        return
     Ws:list[Matrix] = network.weights
-    As:list[Matrix] = network.activations
-    Zs:list[Vector] = network.zs
+    As:list[Matrix|Vector] = network.activations
+    Zs:list[Matrix|Vector] = network.zs
 
     latest_loss= np.zeros(Zs[-1].shape[0])
     dWs:list[Matrix] = []
@@ -188,12 +277,15 @@ def backwards(eval:np.ndarray, network:Network, step:int, reg_config:Regularizat
         network.biases[lastIndex - i] -= lr * dBs[i]
 
 
+def validate(x:Matrix|Vector, y:Matrix|Vector, network:Network):
+    forward(x, network)
+    return 1/(2 * y.shape[1]) * np.sum((network.activations[-1] - y))
+
 def load_network(networkIndex:int = 0)->Network:
     networkDetails:Network = Network()
     with open("net.json", "r") as f:
         nn = json.load(f)["networks"][networkIndex]
         traits:list[str] = list(json.load(f)["contents"])
-
         for trait in traits:
             match trait:
                 case "size":
@@ -208,7 +300,7 @@ def load_network(networkIndex:int = 0)->Network:
 
     return networkDetails
 
-def load_train_data(nn:Network):
+def load_train_data(nn:Network) -> Data | None:
     with open("train.json", "r") as f:
         trainDataFile = json.load(f)
         if trainDataFile["shape"]["in"] != nn.layer_sizes[0] or trainDataFile["shape"]["out"] != nn.layer_sizes[-1]:
@@ -220,27 +312,36 @@ def load_train_data(nn:Network):
             print("Batch amount doesn't divide Data per Epoch!")
             return None
 
-        values:list[dict] = trainDataFile["values"]
-
-        inputs:Tensor3
-        evals:Tensor3
-
-        for n, epoch in enumerate(values):
-            for i, input, eval in enumerate(epoch.items()):
-                inputs[n][i] = np.array(input)
-                evals[n][i] = np.array(eval)
+        values:list[dict] = trainDataFile["values"]["train"]
 
 
-        trainData:TrainDat = TrainDat(
+        trainConfig: TrainConfig = TrainConfig(
             iter_det["dataset_count"],
             iter_det["epoch_count"],
             iter_det["data_size"],
             learn_det["batch_size"],
             learn_det["learning_rate"],
-            inputs, evals,
             learn_det["lw_ca"])
+        data:Data = Data(trainConfig)
 
-        return trainData
+
+        for n, epoch in enumerate(values):
+            train_value = Values()
+            for i, input, eval in enumerate(epoch.items()):
+                train_value.x[n, i] = np.array(input)
+                train_value.y[n, i] = np.array(eval)
+            data.add_train_dataset(train_value)
+
+        values: list[dict] = trainDataFile["values"]["test"]
+        for n, epoch in enumerate(values):
+            test_value = Values()
+            for i, input, eval in enumerate(epoch.items()):
+                test_value.x[n, i] = np.array(input)
+                test_value.y[n, i] = np.array(eval)
+            data.add_test_dataset(test_value)
+
+        return data
+
 
 def getRandom(min:float, max:float):
     r = (round(time.time() * 1000) + random.randint(0, 1)) % 2
@@ -287,31 +388,29 @@ def run(do_config: DropOut = DropOut()):
     activations_original = network.activations.copy()
     handle_init_weights(network)
     train_data = load_train_data(network)
-    if not train_data:
+    if train_data is None:
         return
-    batch_size = train_data.batch_size
-    for i_dataset in range(train_data.dataset_count):
-        for i_epoch in range(train_data.epoch_amount):
-            indices = [i for i in range(train_data.inputs.shape[1])]
-            np.random.permutation(indices)
-            in_epoch = np.array([train_data.inputs[i_dataset][indices[i]] for i in range(train_data.inputs.shape[1])])
-            ev_epoch = np.array([train_data.evals[i_dataset][indices[i]] for i in range(train_data.evals.shape[1])])
+    # batch_size = train_data.train_config.batch_size
 
-            for i_batch in range(int(train_data.inputs.shape[1]/batch_size)):
-                in_ = in_epoch[i_batch * batch_size : min((i_batch+1) * batch_size, train_data.inputs.shape[1])]
-                eval = ev_epoch[i_batch * batch_size : min((i_batch+1) * batch_size, train_data.inputs.shape[1])]
+    for i_dataset in range(train_data.train_config.dataset_count):
+        eval_losses:list[float] = []
+        for i_epoch in range(train_data.train_config.epoch_amount):
+            batch_count = train_data.get_batch_size(i_dataset)
+            for i_batch in range(batch_count):
+                batch_dat = train_data.get_batch_data(i_dataset, i_batch)
                 if do_config.on:
                     network.activations = do_config.get_activations(activations_original)
-                forward(in_, network)
-                backwards(eval, network, i_epoch,
-                          scheduler_config= CosineDecay(train_data.lwCa["lr_start"],
-                                               train_data.lwCa["lr_max"],
-                                               train_data.lwCa["lr_end"],
-                                               train_data.lwCa["warmup_epoch"],
-                                               train_data.epoch_amount),
-                          reg_config= Regularization(RType.L2))
-
-
-
-
-
+                forward(batch_dat.x, network)
+                backwards(batch_dat.y, network, i_epoch,
+                          scheduler_config=CosineDecay(train_data.train_config.lwCa["lr_start"],
+                                                       train_data.train_config.lwCa["lr_max"],
+                                                       train_data.train_config.lwCa["lr_end"],
+                                                       train_data.train_config.lwCa["warmup_epoch"],
+                                                       train_data.train_config.epoch_amount),
+                          reg_config=Regularization(RType.L2))
+            eval_loss = validate(train_data.safe_test_datasets().x, train_data.safe_test_datasets().y, network)
+            eval_losses.append(eval_loss)
+            if len(eval_losses) > 1:
+                if eval_losses[i_epoch-1] < eval_losses[i_epoch]:
+                    print(f"")
+                    break

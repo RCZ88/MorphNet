@@ -35,4 +35,6 @@ public:
     std::expected<Matrix, std::string> multiply(const Matrix &other) const;
 
     std::expected<Matrix, std::string> add(const Matrix &other) const;
+
+    std::expected<Matrix, std::string> subtract(const Matrix &other) const;
 };

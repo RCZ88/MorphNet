@@ -118,3 +118,24 @@ static expected<Matrix, std::string> operator+(const Matrix &self, const Matrix 
     }
     return std::unexpected(result.error());
 }
+
+expected<Matrix, std::string> Matrix::subtract(const Matrix &other) const {
+    if (rows != other.rows || cols != other.cols) {
+        return std::unexpected("Error: Shape Missmatch! " + shapeString() + " != " + other.shapeString());
+    }
+    Matrix added(rows, cols);
+    for (int i = 0; i < rows; i++) {
+        for (int j = 0; j < cols; j++) {
+            added.data[i * cols + j] -= other.data[i * other.cols + j];
+        }
+    }
+    return added;
+}
+
+static expected<Matrix, std::string> operator-(const Matrix &self, const Matrix &other) {
+    auto result = self.subtract(other);
+    if (result.has_value()) {
+        return result.value();
+    }
+    return std::unexpected(result.error());
+}
