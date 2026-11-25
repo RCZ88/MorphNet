@@ -12,7 +12,14 @@
   },
   "learn_details": {
     "learning_rate" : 0.0001,
-    "batch_size": 2
+    "decay_rate" : 0.02,
+    "batch_size": 2,
+    "lw_ca": {
+      "lr_start": 0.001,
+      "lr_max": 0.01,
+      "lr_end:": 0.0001,
+      "warmup_epoch" : 5
+    }
   },
   "values": [
      [

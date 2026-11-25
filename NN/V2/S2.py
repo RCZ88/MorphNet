@@ -4,10 +4,10 @@ import random
 import time
 from dataclasses import dataclass, fields, field
 from typing import List
+from enum import Enum
 
 import numpy as np
-
-
+from numpy.random._examples.cffi.extending import rng
 
 # Define reusable rank-specific aliases (Python 3.12+)
 type Vector[T: np.generic] = np.ndarray[tuple[int], np.dtype[T]]
@@ -42,7 +42,98 @@ class TrainDat(DictAccessMixin):
     learning_rate:float
     inputs:Tensor3
     evals:Tensor3
+    lwCa:dict
 
+
+class SType(Enum):
+    STEP = "STEP"
+    EXPONENTIAL = "EXPONENTIAL"
+    COSINE = "COSINE"
+    NONE = "NONE"
+
+class Scheduler:
+    def __init__(self, type:SType):
+        self.type:SType = type
+
+    def get_lr(self, step):
+        raise NotImplementedError
+
+class DropOut:
+    def __init__(self, on:bool = False, rate = 0):
+        self.on = on
+        self.rate = rate
+
+    def get_activations(self, activations:list[Matrix])->list[Matrix]:
+        if not self.on:
+            return activations
+        return  [
+            rng.binomial(1, 1 - self.rate, size=(activations[i].shape[0], 1)) * activations[i] / (1-self.rate)
+            for i in range(len(activations))
+        ]
+
+class StepDecay(Scheduler):
+    def __init__(self, initial_lr, factor, interval):
+        super().__init__(SType.STEP)
+        self.initial_lr = initial_lr
+        self.factor = factor
+        self.interval = interval
+
+    def get_lr(self, step):
+        return self.initial_lr * self.factor ** (step / self.interval)
+
+
+class ExponentialDecay(Scheduler):
+    def __init__(self, initial_lr, decay_rate):
+        super().__init__(SType.EXPONENTIAL)
+        self.initial_lr = initial_lr
+        self.decay_rate = decay_rate
+
+    def get_lr(self, step):
+        return self.initial_lr * self.decay_rate ** step
+
+class NoScheduler(Scheduler):
+    def __init__(self):
+        super().__init__(SType.NONE)
+
+    def get_lr(self, step):
+        return 0.001
+
+class CosineDecay(Scheduler):
+    def __init__(self, start, max_, final, warmup_rounds, epoch_amount):
+        super().__init__(SType.COSINE)
+        self.start = start
+        self.max_ = max_
+        self.final = final
+        self.warmup_rounds = warmup_rounds
+        self.epoch_amount = epoch_amount
+
+    def get_lr(self, step):
+        return lw_ca(self.start, self.max_, self.final, self.warmup_rounds, self.epoch_amount, step)
+
+class RType(Enum):
+    L1 = "L1"
+    L2 = "L2"
+    BOTH = "BOTH"
+    NONE = "NONE"
+
+class Regularization:
+
+    def __init__(self, type:RType, lambda_value=None):
+        if lambda_value is None:
+            lambda_value = []
+        self.type = type
+        self.lambda_value = lambda_value
+
+    def get_dw(self, weights:list[Matrix]):
+        if self.type == RType.NONE: return 0.0
+
+        match self.type:
+            case RType.BOTH:
+                return sum_weights(weights) * self.lambda_value[0] + self.lambda_value[0]/ 2 * sum_weights([np.square(weight) for weight in weights])
+            case RType.L1:
+                return sum_weights(weights) * self.lambda_value[0]
+            case RType.L2:
+                return self.lambda_value[0]/ 2 * sum_weights([np.square(weight) for weight in weights])
 
 
 
@@ -65,32 +156,36 @@ def forward(x:Matrix, nn:Network):
         curX = nn.activations[i]
 
 
+def sum_weights(weights:list[Matrix])->float:
+    return sum(np.sum(np.abs(w)) for w in weights)
 
-def backwards(eval:np.ndarray, nn:Network, lr:float = 0.0001):
-    Ws:list[Matrix] = nn.weights
-    As:list[Matrix] = nn.activations
-    Zs:list[Vector] = nn.zs
+#rs = regulization constant (hyperparam)
+def backwards(eval:np.ndarray, network:Network, step:int, reg_config:Regularization = Regularization(RType.NONE), scheduler_config:Scheduler = NoScheduler()):
+    Ws:list[Matrix] = network.weights
+    As:list[Matrix] = network.activations
+    Zs:list[Vector] = network.zs
 
-    latest_dZ= np.zeros(Zs[-1].shape[0])
+    latest_loss= np.zeros(Zs[-1].shape[0])
     dWs:list[Matrix] = []
     dBs:list[Vector] = []
     m = As[0].shape[1]
-    for i in range(eval.shape[0]-1, 0, -1):
-        if nn.size-i-1 == 0:
-            dA = (As[i] - eval) / m
+    lr = scheduler_config.get_lr(step)
+    for i in range(len(Ws)-1, -1, -1):
+        if network.size-i-1 == 0:
+            loss = (As[i] - eval) / m
         else:
-            dA = Ws[i+1].T @ latest_dZ
+            loss = Ws[i+1].T @ latest_loss
 
-        dZ = dA * relu_derivative(Zs[i])
-        latest_dZ = dZ
+        dZ = loss * relu_derivative(Zs[i])
+        latest_loss = loss
 
-        dWs.append(dZ @ As[i - 1].T)
+        dWs.append(dZ @ As[i - 1].T + reg_config.get_dw(network.weights) * sum_weights(network.weights))
         dBs.append(np.sum(dZ, axis=1))
 
     lastIndex = len(dWs) - 1
     for i in range(lastIndex+1):
-        nn.weights[lastIndex-i] -= lr * dWs[i]
-        nn.biases[lastIndex-i] -= lr * dBs[i]
+        network.weights[lastIndex - i] -= lr * dWs[i]
+        network.biases[lastIndex - i] -= lr * dBs[i]
 
 
 def load_network(networkIndex:int = 0)->Network:
@@ -142,7 +237,8 @@ def load_train_data(nn:Network):
             iter_det["data_size"],
             learn_det["batch_size"],
             learn_det["learning_rate"],
-            inputs, evals)
+            inputs, evals,
+            learn_det["lw_ca"])
 
         return trainData
 
@@ -168,8 +264,27 @@ def handle_init_weights(nn:Network):
             nn.weights[0].size == 0 and nn.weights[1].size == 0):
         he_init(nn)
 
-def run():
+def stepDecay(init_lr:float, decay_factor:float, s:int, t:int)->float:
+    return init_lr * decay_factor ** (t/s)
+
+def expDecay(init_lr:float, decay_rate:float, t)->float:
+    return init_lr * math.exp(-decay_rate * t)
+
+def consineAnnealing(lr_max:float, lr_min:float, epoch_count:int, t:int):
+    return lr_min + 0.5 * (lr_max-lr_min) * (1 + math.cos(math.pi * t / epoch_count))
+
+def linear_warmup(lr_start:float, lr_end:float, warmup_epoch_count:int, t:int)->float:
+    return lr_start + t/warmup_epoch_count * (lr_end-lr_start)
+
+def lw_ca(lr_start, lr_max, lr_end, warmupAmount:int, totalEpoch:int, t:int)->float:
+    return linear_warmup(lr_start, lr_max, warmupAmount, t) \
+        if t > warmupAmount \
+        else consineAnnealing(lr_max, lr_end, totalEpoch, t)
+
+
+def run(do_config: DropOut = DropOut()):
     network = load_network()
+    activations_original = network.activations.copy()
     handle_init_weights(network)
     train_data = load_train_data(network)
     if not train_data:
@@ -185,8 +300,17 @@ def run():
             for i_batch in range(int(train_data.inputs.shape[1]/batch_size)):
                 in_ = in_epoch[i_batch * batch_size : min((i_batch+1) * batch_size, train_data.inputs.shape[1])]
                 eval = ev_epoch[i_batch * batch_size : min((i_batch+1) * batch_size, train_data.inputs.shape[1])]
+                if do_config.on:
+                    network.activations = do_config.get_activations(activations_original)
                 forward(in_, network)
-                backwards(eval, network, train_data.learning_rate)
+                backwards(eval, network, i_epoch,
+                          scheduler_config= CosineDecay(train_data.lwCa["lr_start"],
+                                               train_data.lwCa["lr_max"],
+                                               train_data.lwCa["lr_end"],
+                                               train_data.lwCa["warmup_epoch"],
+                                               train_data.epoch_amount),
+                          reg_config= Regularization(RType.L2))
+
 
 
 

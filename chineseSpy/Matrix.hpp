@@ -2,6 +2,8 @@
 #pragma once
 
 #include <vector>
+#include <expected>
+#include <string>
 
 class Matrix {
 private:
@@ -25,7 +27,12 @@ public:
 
     void printMatrix() const;
 
-    void transform();
+    std::string shapeString() const;
 
-    void multiply(const Matrix &other);
+    Matrix transform() const;
+
+
+    std::expected<Matrix, std::string> multiply(const Matrix &other) const;
+
+    std::expected<Matrix, std::string> add(const Matrix &other) const;
 };

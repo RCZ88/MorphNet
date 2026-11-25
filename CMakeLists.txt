@@ -1,7 +1,8 @@
-cmake_minimum_required(VERSION 4.4)
+cmake_minimum_required(VERSION 4.3)
 project(AIMLDL)
 
-set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_executable(AIMLDL
 #        chineseSpy/intro.cpp
