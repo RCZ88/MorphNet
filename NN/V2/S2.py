@@ -215,6 +215,41 @@ class Regularization:
             case RType.L2:
                 return self.lambda_value[0]/ 2 * sum_weights([np.square(weight) for weight in weights])
 
+class CType(Enum):
+    BY_VALUE = "BY_VALUE"
+    BY_GLOBAL_NORM = "BY_GLOBAL_NORM"
+    NONE = "NONE"
+
+class Clipping:
+    def __init__(self, c_type:CType, c_const:float):
+        if c_const < 0.0:
+            raise ValueError("c_const can't be negative!")
+        self.c_type = c_type
+        self.c_const = c_const
+
+    def get_wb(self, dw:list[Matrix], db:list[Vector])->tuple[list[Matrix], list[Vector]]:
+        if self.c_type == CType.NONE:
+            return dw, db
+        match self.c_type:
+            case CType.BY_GLOBAL_NORM:
+                g = 0
+                for matrix in dw:
+                    g += np.sum(np.square(matrix))
+                for matrix in db:
+                    g += np.sum(np.square(matrix))
+                g = np.sqrt(g)
+                if g <= self.c_const:
+                    return dw, db
+                scale = min(1, self.c_const / g)
+                return [weights * scale for weights in dw], [bias * scale for bias in db]
+            case CType.BY_VALUE:
+                updated_w = []
+                updated_b = []
+                for matrix in dw:
+                    updated_w.append(np.maximum(-self.c_const, np.minimum(matrix, self.c_const)))
+                for matrix in db:
+                    updated_b.append(np.maximum(-self.c_const, np.minimum(matrix, self.c_const)))
+                return updated_w, updated_b
 
 
 def relu(z: np.ndarray):
@@ -240,7 +275,10 @@ def sum_weights(weights:list[Matrix])->float:
     return sum(np.sum(np.abs(w)) for w in weights)
 
 #rs = regulization constant (hyperparam)
-def backwards(eval:Matrix|Vector, network:Network, step:int, reg_config:Regularization = Regularization(RType.NONE), scheduler_config:Scheduler = NoScheduler()):
+def backwards(eval:Matrix|Vector, network:Network, step:int,
+              reg_config:Regularization = Regularization(RType.NONE),
+              scheduler_config:Scheduler = NoScheduler(),
+              clipping:Clipping = Clipping(CType.NONE)):
     if eval.shape != network.activations[-1].shape:
         print(f"Shape Mismatch Error! Network LL:{network.activations[-1].shape} != Eval: {eval.shape}")
         return
@@ -272,6 +310,7 @@ def backwards(eval:Matrix|Vector, network:Network, step:int, reg_config:Regulari
         dBs.append(np.sum(dZ, axis=1))
 
     lastIndex = len(dWs) - 1
+    dWs, dBs = clipping.get_wb(dWs, dBs)
     for i in range(lastIndex+1):
         network.weights[lastIndex - i] -= lr * dWs[i]
         network.biases[lastIndex - i] -= lr * dBs[i]
@@ -303,7 +342,8 @@ def load_network(networkIndex:int = 0)->Network:
 def load_train_data(nn:Network) -> Data | None:
     with open("train.json", "r") as f:
         trainDataFile = json.load(f)
-        if trainDataFile["shape"]["in"] != nn.layer_sizes[0] or trainDataFile["shape"]["out"] != nn.layer_sizes[-1]:
+        shape_ = trainDataFile["shape"]
+        if shape_["in"] != nn.layer_sizes[0] or shape_["out"] != nn.layer_sizes[-1]:
             print("Invalid Train Data Shape")
             return None
         iter_det = trainDataFile["iteration_details"]
@@ -322,7 +362,7 @@ def load_train_data(nn:Network) -> Data | None:
             learn_det["batch_size"],
             learn_det["learning_rate"],
             learn_det["lw_ca"])
-        data:Data = Data(trainConfig)
+        data:Data = Data([shape_["in"]] + shape_["hidden"]  + [shape_["out"]], trainConfig)
 
 
         for n, epoch in enumerate(values):
@@ -412,5 +452,5 @@ def run(do_config: DropOut = DropOut()):
             eval_losses.append(eval_loss)
             if len(eval_losses) > 1:
                 if eval_losses[i_epoch-1] < eval_losses[i_epoch]:
-                    print(f"")
+                    print(f"Early Stop to Prevent Overfitting!")
                     break
